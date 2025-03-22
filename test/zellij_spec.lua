@@ -34,7 +34,7 @@ describe("Zellij", function()
 
       assert.stub(notify_stub).was_called_with("SUCCESS", vim.log.levels.INFO, {
         title = 'ZELLIJ',
-        timeout = 250
+        timeout = 1000
       })
       assert.stub(notify_stub).was_called(1)
 
