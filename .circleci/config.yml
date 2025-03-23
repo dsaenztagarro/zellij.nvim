@@ -1,0 +1,27 @@
+jobs:
+  test:
+    docker:
+      - image: alpine:latest  # Use a minimal base image
+    steps:
+      - checkout  # Clone your repository
+
+      # Install required dependencies
+      - run:
+          name: Install dependencies
+          command: |
+            apk add --no-cache neovim git curl unzip lua5.1 luarocks
+            luarocks install busted
+      
+      # Set up the Neovim runtime and install plenary.nvim
+      - run:
+          name: Set up Neovim environment
+          command: |
+            mkdir -p ~/.config/nvim/lua
+            git clone --depth=1 https://github.com/nvim-lua/plenary.nvim ~/.config/nvim/pack/plugins/start/plenary.nvim
+      
+      # Run the tests
+      - run:
+          name: Run Busted tests
+          command: |
+            nvim --headless -c "PlenaryBustedFile test/zellij_spec.lua"
+            nvim --headless -c "PlenaryBustedDirectory tests/ { minimal_init = 'tests/minimal_init.lua' }" -c q
