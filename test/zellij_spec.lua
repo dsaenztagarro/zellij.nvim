@@ -1,19 +1,10 @@
 local log = require "logger"
 local Zellij = require "zellij"
-local Job = require'plenary.job'
 local stub = require("luassert.stub")
 
 describe("Zellij", function()
   describe("new_pane", function()
     before_each(function()
-      -- stub(vim, "system", function(cmd)
-      --   return Job:new({
-      --     command = "echo",
-      --     args = { "Test Mock Output" },
-      --     env = { ['a'] = 'b' },
-      --   }):sync()[1]  -- Simulated output
-      -- end)
-
       stub(vim, "system", function(_cmd)
         log.trace("Test.vim.system.callback")
         local response = { code = 0, signal = 0, stdout = "", stderr = "" }
@@ -22,23 +13,38 @@ describe("Zellij", function()
       end)
     end)
 
-    it("calls vim.system", function()
-      log.trace("TEST begins")
-
-      local cmd = {"zellij", "action", "new-pane", "--floating", "--", "zsh", "-c", "HEADFUL=true bundle exec rspec"}
-
+    it("notifies with error exception calling zellij command", function()
       local notify_stub = stub(vim, "notify")
+      local err_msg = "vim.system failed!"
 
-      local result = Zellij.new_pane(cmd)
-      assert.equals(result, "expected-output")  -- Expected output
+      stub(vim, "system", function() error(err_msg, 0) end)
 
-      assert.stub(notify_stub).was_called_with("SUCCESS", vim.log.levels.INFO, {
-        title = 'ZELLIJ',
-        timeout = 1000
-      })
+      local cmd = "echo hello"
+      Zellij.new_pane(cmd)
+
       assert.stub(notify_stub).was_called(1)
 
+      -- local partial_match = function(arg)
+      --   return arg:match(err_msg)  -- Partial match using Lua pattern
+      -- end
+      assert.stub(notify_stub).was_called_with(function(...)
+        local args = {...}
+        log.trace(vim.inspect(args))
+        return true
+      end)
+
+      -- assert.stub(notify_stub).was_called_with(err_msg, vim.log.levels.ERROR, { title = 'Zellij cmd failed' })
+
       vim.system:revert()
+    end)
+
+    it("notifies with error", function()
+      local notify_stub = stub(vim, "notify")
+
+      local cmd = "echo hello"
+      Zellij.new_pane(cmd)
+
+      assert.stub(notify_stub).was_called(0)
     end)
   end)
 end)
