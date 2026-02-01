@@ -1,0 +1,28 @@
+# =============================================================================
+# GITIGNORE FOR ZELLIJ.NVIM
+# =============================================================================
+# Files and directories that should not be tracked by git.
+# =============================================================================
+
+# Dependencies (cloned for testing)
+deps/
+
+# Neovim swap files
+*.swp
+*.swo
+*~
+
+# Lua bytecode
+*.luac
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE specific
+.idea/
+.vscode/
+*.sublime-*
+
+# Test artifacts
+*.log
