@@ -1,5 +1,7 @@
 # zellij.nvim
 
+[![Tests](https://github.com/dsaenztagarro/zellij.nvim/actions/workflows/tests.yml/badge.svg)](https://github.com/dsaenztagarro/zellij.nvim/actions/workflows/tests.yml)
+
 Neovim plugin for seamless integration with [Zellij](https://zellij.dev/) terminal multiplexer.
 
 ## Features
