@@ -719,6 +719,95 @@ T["edit()"]["respects config defaults for floating"] = function()
 end
 
 -- =============================================================================
+-- SESSION-AWARE COMMANDS TESTS
+-- =============================================================================
+-- Tests for session targeting across all functions.
+-- Session flag appears before "action" subcommand in zellij CLI.
+-- =============================================================================
+T["session support"] = new_set()
+
+T["session support"]["new_pane includes session from options"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'echo test', session = 'my-project' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Session flag should be before "action"
+	-- Expected: zellij --session my-project action new-pane ...
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "--session")
+	eq(cmd[3], "my-project")
+	eq(cmd[4], "action")
+	eq(cmd[5], "new-pane")
+end
+
+T["session support"]["new_pane uses config session as default"] = function()
+	child.lua([[
+    Zellij.setup({ session = 'default-session' })
+    Zellij.new_pane('echo test')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[2], "--session")
+	eq(cmd[3], "default-session")
+end
+
+T["session support"]["per-call session overrides config session"] = function()
+	child.lua([[
+    Zellij.setup({ session = 'config-session' })
+    Zellij.new_pane({ cmd = 'echo test', session = 'override-session' })
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[2], "--session")
+	eq(cmd[3], "override-session")
+end
+
+T["session support"]["run includes session from options"] = function()
+	child.lua([[Zellij.run('npm test', { session = 'test-session' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[2], "--session")
+	eq(cmd[3], "test-session")
+end
+
+T["session support"]["edit includes session from options"] = function()
+	child.lua([[Zellij.edit('/path/to/file.lua', { session = 'docs-session' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "--session")
+	eq(cmd[3], "docs-session")
+	eq(cmd[4], "action")
+	eq(cmd[5], "edit")
+end
+
+T["session support"]["no session flag when nil"] = function()
+	child.lua([[
+    Zellij.setup({ session = nil })
+    Zellij.new_pane('echo test')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT have --session flag
+	local has_session = false
+	for _, v in ipairs(cmd) do
+		if v == "--session" then
+			has_session = true
+		end
+	end
+	eq(has_session, false)
+
+	-- Should go directly to action
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "action")
+end
+
+-- =============================================================================
 -- RETURN THE TEST SET
 -- =============================================================================
 -- mini.test expects the test file to return the root test set.

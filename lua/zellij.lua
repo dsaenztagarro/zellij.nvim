@@ -54,6 +54,7 @@ local log = require("logger")
 ---All fields are optional and have sensible defaults.
 ---
 ---@field shell? string Shell to use for commands (default: $SHELL or /bin/sh)
+---@field session? string Default Zellij session to target (default: nil = current session)
 ---@field defaults? ZellijPaneDefaults Default pane settings
 ---@field notifications? ZellijNotificationConfig Notification settings
 
@@ -68,6 +69,7 @@ local log = require("logger")
 ---@field name? string Name to assign to the pane
 ---@field close_on_exit? boolean Close pane when command exits (uses config default if nil)
 ---@field start_suspended? boolean Wait for keypress before running (uses config default if nil)
+---@field session? string Target Zellij session (uses config default if nil)
 
 ---@class ZellijRunOpts
 ---Options for the run() convenience function.
@@ -79,6 +81,7 @@ local log = require("logger")
 ---@field name? string Name to assign to the pane
 ---@field close_on_exit? boolean Close pane when command exits (uses config default if nil)
 ---@field start_suspended? boolean Wait for keypress before running (uses config default if nil)
+---@field session? string Target Zellij session (uses config default if nil)
 
 ---@class ZellijEditOpts
 ---Options for the edit() function.
@@ -88,6 +91,7 @@ local log = require("logger")
 ---@field direction? "right"|"down" Direction for tiled pane (ignored if floating)
 ---@field line? number Line number to jump to (uses +line syntax)
 ---@field cwd? string Working directory for the editor
+---@field session? string Target Zellij session (uses config default if nil)
 
 -- =============================================================================
 -- DEFAULT CONFIGURATION
@@ -102,6 +106,9 @@ local log = require("logger")
 local DEFAULT_CONFIG = {
 	-- Shell defaults to environment variable, with fallback
 	shell = nil, -- Will use os.getenv("SHELL") or "/bin/sh" at runtime
+
+	-- Target session (nil = current session, or specify session name)
+	session = nil,
 
 	-- Default pane behavior
 	defaults = {
@@ -170,6 +177,17 @@ local function get_shell()
 	return config.shell or os.getenv("SHELL") or "/bin/sh"
 end
 
+---Get the session to target (from options or config)
+---
+---LUA PATTERN: Cascading defaults
+---First check the per-call option, then fall back to config, then nil (current session).
+---
+---@param opts_session? string Session from options (may be nil)
+---@return string|nil The session name or nil for current session
+local function get_session(opts_session)
+	return opts_session or config.session
+end
+
 ---Build the command array for vim.system() from options
 ---
 ---LUA PATTERN: Table building
@@ -181,7 +199,18 @@ end
 local function build_new_pane_command(opts)
 	-- Start with the base command
 	-- Using array literal {...} to create a list
-	local cmd = { "zellij", "action", "new-pane" }
+	local cmd = { "zellij" }
+
+	-- Session flag goes before the action subcommand
+	-- CLI syntax: zellij --session <name> action new-pane
+	local session = get_session(opts.session)
+	if session then
+		table.insert(cmd, "--session")
+		table.insert(cmd, session)
+	end
+
+	table.insert(cmd, "action")
+	table.insert(cmd, "new-pane")
 
 	-- Add flags based on options
 	-- The pattern `if opts.x then` checks if the value is truthy (not nil/false)
@@ -234,7 +263,17 @@ end
 ---@param opts ZellijEditOpts Options for the edit command
 ---@return string[] Array of command parts for vim.system()
 local function build_edit_command(file, opts)
-	local cmd = { "zellij", "action", "edit" }
+	local cmd = { "zellij" }
+
+	-- Session flag goes before the action subcommand
+	local session = get_session(opts.session)
+	if session then
+		table.insert(cmd, "--session")
+		table.insert(cmd, session)
+	end
+
+	table.insert(cmd, "action")
+	table.insert(cmd, "edit")
 
 	if opts.floating then
 		table.insert(cmd, "--floating")
@@ -276,11 +315,13 @@ local function normalize_options(input)
 	if type(input) == "string" then
 		-- Convert string to options table for backwards compatibility
 		-- Use config defaults for behavior
+		-- Note: session is not included here; get_session() handles the fallback
 		return {
 			cmd = input,
 			floating = defaults.floating,
 			close_on_exit = defaults.close_on_exit,
 			start_suspended = defaults.start_suspended,
+			session = nil, -- Will use config.session via get_session()
 		}
 	elseif type(input) == "table" then
 		-- Apply config defaults for unspecified options
@@ -296,6 +337,7 @@ local function normalize_options(input)
 			name = input.name,
 			close_on_exit = input.close_on_exit == nil and defaults.close_on_exit or input.close_on_exit,
 			start_suspended = input.start_suspended == nil and defaults.start_suspended or input.start_suspended,
+			session = input.session, -- Passed to get_session() which handles config fallback
 		}
 	else
 		-- Provide a helpful error message for invalid input
@@ -446,6 +488,7 @@ M.edit = function(file, opts)
 		direction = opts.direction,
 		line = opts.line,
 		cwd = opts.cwd,
+		session = opts.session, -- Passed to get_session() which handles config fallback
 	}
 
 	-- Build the command array
