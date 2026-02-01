@@ -521,6 +521,204 @@ T["notification configuration"]["respects enabled = false"] = function()
 end
 
 -- =============================================================================
+-- RUN() CONVENIENCE FUNCTION TESTS
+-- =============================================================================
+-- Tests for the run() alias function.
+-- This is a thin wrapper around new_pane for cleaner command execution.
+-- =============================================================================
+T["run()"] = new_set()
+
+T["run()"]["is a function"] = function()
+	local result = child.lua_get([[type(Zellij.run)]])
+	eq(result, "function")
+end
+
+T["run()"]["executes command in new pane"] = function()
+	child.lua([[Zellij.run('npm test')]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "action")
+	eq(cmd[3], "new-pane")
+	-- Default is floating
+	eq(cmd[4], "--floating")
+	-- Should have -- separator and command
+	local has_command = false
+	for i, v in ipairs(cmd) do
+		if v == "--" then
+			-- Check the command is after the separator
+			eq(cmd[i + 2], "-c")
+			eq(cmd[i + 3], "npm test")
+			has_command = true
+		end
+	end
+	eq(has_command, true)
+end
+
+T["run()"]["accepts options as second argument"] = function()
+	child.lua([[Zellij.run('cargo build', { close_on_exit = true, name = 'Build' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Check for --close-on-exit
+	local has_close = false
+	for _, v in ipairs(cmd) do
+		if v == "--close-on-exit" then
+			has_close = true
+		end
+	end
+	eq(has_close, true)
+
+	-- Check for --name
+	local name_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--name" then
+			name_idx = i
+		end
+	end
+	expect.no_equality(name_idx, nil)
+	eq(cmd[name_idx + 1], "Build")
+end
+
+T["run()"]["respects config defaults"] = function()
+	child.lua([[
+    Zellij.setup({ defaults = { floating = false, close_on_exit = true } })
+    Zellij.run('echo test')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT have --floating (default is now false)
+	local has_floating = false
+	for _, v in ipairs(cmd) do
+		if v == "--floating" then
+			has_floating = true
+		end
+	end
+	eq(has_floating, false)
+
+	-- Should have --close-on-exit (default is now true)
+	local has_close = false
+	for _, v in ipairs(cmd) do
+		if v == "--close-on-exit" then
+			has_close = true
+		end
+	end
+	eq(has_close, true)
+end
+
+-- =============================================================================
+-- EDIT() FUNCTION TESTS
+-- =============================================================================
+-- Tests for the edit() function which opens files using zellij action edit.
+-- =============================================================================
+T["edit()"] = new_set()
+
+T["edit()"]["is a function"] = function()
+	local result = child.lua_get([[type(Zellij.edit)]])
+	eq(result, "function")
+end
+
+T["edit()"]["opens file in new pane"] = function()
+	child.lua([[Zellij.edit('/path/to/file.lua')]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "action")
+	eq(cmd[3], "edit")
+	-- Default is floating
+	eq(cmd[4], "--floating")
+	-- File path should be last
+	eq(cmd[#cmd], "/path/to/file.lua")
+end
+
+T["edit()"]["respects floating = false"] = function()
+	child.lua([[Zellij.edit('/path/to/file.lua', { floating = false })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT contain --floating
+	local has_floating = false
+	for _, v in ipairs(cmd) do
+		if v == "--floating" then
+			has_floating = true
+		end
+	end
+	eq(has_floating, false)
+end
+
+T["edit()"]["respects direction option"] = function()
+	child.lua([[Zellij.edit('/path/to/file.lua', { floating = false, direction = 'right' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --direction and its value
+	local dir_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--direction" then
+			dir_idx = i
+		end
+	end
+
+	expect.no_equality(dir_idx, nil)
+	eq(cmd[dir_idx + 1], "right")
+end
+
+T["edit()"]["respects line option"] = function()
+	child.lua([[Zellij.edit('/path/to/file.lua', { line = 42 })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --line-number and its value
+	local line_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--line-number" then
+			line_idx = i
+		end
+	end
+
+	expect.no_equality(line_idx, nil)
+	eq(cmd[line_idx + 1], "42")
+end
+
+T["edit()"]["respects cwd option"] = function()
+	child.lua([[Zellij.edit('file.lua', { cwd = '/project' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --cwd and its value
+	local cwd_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--cwd" then
+			cwd_idx = i
+		end
+	end
+
+	expect.no_equality(cwd_idx, nil)
+	eq(cmd[cwd_idx + 1], "/project")
+end
+
+T["edit()"]["respects config defaults for floating"] = function()
+	child.lua([[
+    Zellij.setup({ defaults = { floating = false } })
+    Zellij.edit('/path/to/file.lua')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT have --floating (default is now false)
+	local has_floating = false
+	for _, v in ipairs(cmd) do
+		if v == "--floating" then
+			has_floating = true
+		end
+	end
+	eq(has_floating, false)
+end
+
+-- =============================================================================
 -- RETURN THE TEST SET
 -- =============================================================================
 -- mini.test expects the test file to return the root test set.
