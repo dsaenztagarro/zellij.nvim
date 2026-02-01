@@ -808,6 +808,156 @@ T["session support"]["no session flag when nil"] = function()
 end
 
 -- =============================================================================
+-- NEW_TAB() FUNCTION TESTS
+-- =============================================================================
+-- Tests for the new_tab() function which creates tabs with optional layouts.
+-- =============================================================================
+T["new_tab()"] = new_set()
+
+T["new_tab()"]["is a function"] = function()
+	local result = child.lua_get([[type(Zellij.new_tab)]])
+	eq(result, "function")
+end
+
+T["new_tab()"]["creates basic tab without options"] = function()
+	child.lua([[Zellij.new_tab()]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "action")
+	eq(cmd[3], "new-tab")
+end
+
+T["new_tab()"]["respects layout option"] = function()
+	child.lua([[Zellij.new_tab({ layout = '~/.config/zellij/layouts/dev.kdl' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --layout and its value
+	local layout_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--layout" then
+			layout_idx = i
+		end
+	end
+
+	expect.no_equality(layout_idx, nil)
+	eq(cmd[layout_idx + 1], "~/.config/zellij/layouts/dev.kdl")
+end
+
+T["new_tab()"]["respects name option"] = function()
+	child.lua([[Zellij.new_tab({ name = 'Development' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --name and its value
+	local name_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--name" then
+			name_idx = i
+		end
+	end
+
+	expect.no_equality(name_idx, nil)
+	eq(cmd[name_idx + 1], "Development")
+end
+
+T["new_tab()"]["respects cwd option"] = function()
+	child.lua([[Zellij.new_tab({ cwd = '/project' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --cwd and its value
+	local cwd_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--cwd" then
+			cwd_idx = i
+		end
+	end
+
+	expect.no_equality(cwd_idx, nil)
+	eq(cmd[cwd_idx + 1], "/project")
+end
+
+T["new_tab()"]["respects session option"] = function()
+	child.lua([[Zellij.new_tab({ session = 'my-project' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "--session")
+	eq(cmd[3], "my-project")
+	eq(cmd[4], "action")
+	eq(cmd[5], "new-tab")
+end
+
+T["new_tab()"]["supports all options together"] = function()
+	child.lua([[
+    Zellij.new_tab({
+      layout = 'dev.kdl',
+      name = 'Dev',
+      cwd = '/project',
+      session = 'work'
+    })
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Check session
+	eq(cmd[2], "--session")
+	eq(cmd[3], "work")
+
+	-- Check layout
+	local layout_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--layout" then
+			layout_idx = i
+		end
+	end
+	expect.no_equality(layout_idx, nil)
+	eq(cmd[layout_idx + 1], "dev.kdl")
+
+	-- Check name
+	local name_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--name" then
+			name_idx = i
+		end
+	end
+	expect.no_equality(name_idx, nil)
+	eq(cmd[name_idx + 1], "Dev")
+end
+
+-- =============================================================================
+-- VIM COMMANDS TESTS
+-- =============================================================================
+-- Tests for the user commands created by setup().
+-- =============================================================================
+T["vim commands"] = new_set()
+
+T["vim commands"]["ZellijRun command exists after setup"] = function()
+	child.lua([[Zellij.setup()]])
+
+	local exists = child.lua_get([[vim.fn.exists(':ZellijRun') == 2]])
+	eq(exists, true)
+end
+
+T["vim commands"]["ZellijEdit command exists after setup"] = function()
+	child.lua([[Zellij.setup()]])
+
+	local exists = child.lua_get([[vim.fn.exists(':ZellijEdit') == 2]])
+	eq(exists, true)
+end
+
+T["vim commands"]["ZellijNewTab command exists after setup"] = function()
+	child.lua([[Zellij.setup()]])
+
+	local exists = child.lua_get([[vim.fn.exists(':ZellijNewTab') == 2]])
+	eq(exists, true)
+end
+
+-- =============================================================================
 -- RETURN THE TEST SET
 -- =============================================================================
 -- mini.test expects the test file to return the root test set.

@@ -93,6 +93,16 @@ local log = require("logger")
 ---@field cwd? string Working directory for the editor
 ---@field session? string Target Zellij session (uses config default if nil)
 
+---@class ZellijNewTabOpts
+---Options for the new_tab() function.
+---Controls how a new tab is created, optionally with a layout.
+---
+---@field layout? string Path to a layout file (.kdl)
+---@field layout_url? string URL to a layout file (v0.41+)
+---@field name? string Name for the new tab
+---@field cwd? string Working directory for the tab
+---@field session? string Target Zellij session (uses config default if nil)
+
 -- =============================================================================
 -- DEFAULT CONFIGURATION
 -- =============================================================================
@@ -155,6 +165,7 @@ local config = vim.deepcopy(DEFAULT_CONFIG)
 ---@field new_pane fun(opts: string|ZellijNewPaneOpts): nil Create a new pane
 ---@field run fun(cmd: string, opts?: ZellijRunOpts): nil Run command in new pane (convenience alias)
 ---@field edit fun(file: string, opts?: ZellijEditOpts): nil Open file in new pane with $EDITOR
+---@field new_tab fun(opts?: ZellijNewTabOpts): nil Create a new tab (optionally with layout)
 ---@field get_config fun(): ZellijConfig Get current configuration (for testing)
 local M = {}
 
@@ -299,6 +310,45 @@ local function build_edit_command(file, opts)
 	return cmd
 end
 
+---Build the command array for zellij action new-tab
+---
+---@param opts ZellijNewTabOpts Options for the new tab command
+---@return string[] Array of command parts for vim.system()
+local function build_new_tab_command(opts)
+	local cmd = { "zellij" }
+
+	-- Session flag goes before the action subcommand
+	local session = get_session(opts.session)
+	if session then
+		table.insert(cmd, "--session")
+		table.insert(cmd, session)
+	end
+
+	table.insert(cmd, "action")
+	table.insert(cmd, "new-tab")
+
+	-- Layout options (layout file takes precedence over URL)
+	if opts.layout then
+		table.insert(cmd, "--layout")
+		table.insert(cmd, opts.layout)
+	elseif opts.layout_url then
+		table.insert(cmd, "--layout")
+		table.insert(cmd, opts.layout_url)
+	end
+
+	if opts.name then
+		table.insert(cmd, "--name")
+		table.insert(cmd, opts.name)
+	end
+
+	if opts.cwd then
+		table.insert(cmd, "--cwd")
+		table.insert(cmd, opts.cwd)
+	end
+
+	return cmd
+end
+
 ---Normalize user input into a consistent options table
 ---
 ---LUA PATTERN: Function overloading via type checking
@@ -380,6 +430,68 @@ M.setup = function(opts)
 	end
 
 	log.trace("Zellij.setup called with config:", config)
+
+	-- =============================================================================
+	-- VIM COMMANDS
+	-- =============================================================================
+	-- LUA PATTERN: Creating user commands
+	-- vim.api.nvim_create_user_command(name, callback, opts) creates a :Command
+	-- The callback receives a table with:
+	-- - args: the raw argument string
+	-- - fargs: arguments split by whitespace
+	-- - bang: true if called with !
+	-- =============================================================================
+
+	-- :ZellijRun <command>
+	-- Run a command in a new Zellij pane
+	vim.api.nvim_create_user_command("ZellijRun", function(cmd_opts)
+		if cmd_opts.args == "" then
+			vim.notify("Usage: :ZellijRun <command>", vim.log.levels.WARN)
+			return
+		end
+		M.run(cmd_opts.args)
+	end, {
+		nargs = "+",
+		desc = "Run command in new Zellij pane",
+	})
+
+	-- :ZellijEdit [file]
+	-- Open file in new Zellij pane (defaults to current file)
+	-- Supports % expansion for current file
+	vim.api.nvim_create_user_command("ZellijEdit", function(cmd_opts)
+		local file = cmd_opts.args
+		if file == "" then
+			-- Default to current file if no argument
+			file = vim.fn.expand("%:p")
+		else
+			-- Expand % and other special characters
+			file = vim.fn.expand(file)
+		end
+
+		if file == "" then
+			vim.notify("No file specified and no current file", vim.log.levels.WARN)
+			return
+		end
+
+		-- Get current line number for jumping
+		local line = vim.fn.line(".")
+		M.edit(file, { line = line })
+	end, {
+		nargs = "?",
+		complete = "file",
+		desc = "Open file in new Zellij pane with $EDITOR",
+	})
+
+	-- :ZellijNewTab [layout]
+	-- Create a new tab, optionally with a layout file
+	vim.api.nvim_create_user_command("ZellijNewTab", function(cmd_opts)
+		local layout = cmd_opts.args ~= "" and cmd_opts.args or nil
+		M.new_tab({ layout = layout })
+	end, {
+		nargs = "?",
+		complete = "file",
+		desc = "Create new Zellij tab (optionally with layout)",
+	})
 end
 
 ---Get the current configuration (useful for testing and debugging)
@@ -503,6 +615,49 @@ M.edit = function(file, opts)
 		log.trace("ERROR " .. err)
 		if config.notifications.enabled and config.notifications.on_error then
 			vim.notify("" .. err, vim.log.levels.ERROR, { title = "Zellij edit failed" })
+		end
+	end
+end
+
+---Create a new Zellij tab, optionally with a layout
+---
+---Useful for setting up development environments with predefined pane layouts.
+---Layouts can be local .kdl files or URLs (v0.41+).
+---
+---```lua
+----- Create empty tab
+---Zellij.new_tab()
+---
+----- Create tab with layout
+---Zellij.new_tab({ layout = '~/.config/zellij/layouts/dev.kdl' })
+---
+----- Create tab with name and layout
+---Zellij.new_tab({ layout = 'dev.kdl', name = 'Development', cwd = vim.fn.getcwd() })
+---```
+---
+---@param opts? ZellijNewTabOpts Optional settings for the tab
+M.new_tab = function(opts)
+	opts = opts or {}
+	local tab_opts = {
+		layout = opts.layout,
+		layout_url = opts.layout_url,
+		name = opts.name,
+		cwd = opts.cwd,
+		session = opts.session,
+	}
+
+	-- Build the command array
+	local cmd = build_new_tab_command(tab_opts)
+
+	log.trace("Zellij.new_tab command:", cmd)
+
+	-- Execute the command asynchronously
+	local ok, err = pcall(vim.system, cmd, { text = true }, M._new_pane_callback)
+
+	if not ok then
+		log.trace("ERROR " .. err)
+		if config.notifications.enabled and config.notifications.on_error then
+			vim.notify("" .. err, vim.log.levels.ERROR, { title = "Zellij new-tab failed" })
 		end
 	end
 end
