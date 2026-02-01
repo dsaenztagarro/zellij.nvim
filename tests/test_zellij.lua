@@ -359,6 +359,168 @@ T["_new_pane_callback()"]["notifies on error (non-zero code)"] = function()
 end
 
 -- =============================================================================
+-- CONFIGURATION TESTS
+-- =============================================================================
+-- Tests for the setup() configuration system.
+-- These verify that user configuration is properly applied and merged.
+-- =============================================================================
+T["setup() configuration"] = new_set()
+
+T["setup() configuration"]["provides default config values"] = function()
+	child.lua([[Zellij.setup()]])
+
+	local cfg = child.lua_get([[Zellij.get_config()]])
+
+	-- Check default structure exists
+	expect.no_equality(cfg.defaults, nil)
+	expect.no_equality(cfg.notifications, nil)
+
+	-- Check default values
+	eq(cfg.defaults.floating, true)
+	eq(cfg.defaults.close_on_exit, false)
+	eq(cfg.defaults.start_suspended, false)
+	eq(cfg.notifications.enabled, true)
+	eq(cfg.notifications.on_success, false)
+	eq(cfg.notifications.on_error, true)
+end
+
+T["setup() configuration"]["merges user config with defaults"] = function()
+	child.lua([[
+    Zellij.setup({
+      shell = '/bin/zsh',
+      defaults = {
+        close_on_exit = true,
+      },
+    })
+  ]])
+
+	local cfg = child.lua_get([[Zellij.get_config()]])
+
+	-- User-provided values
+	eq(cfg.shell, "/bin/zsh")
+	eq(cfg.defaults.close_on_exit, true)
+
+	-- Default values preserved for unspecified options
+	eq(cfg.defaults.floating, true)
+	eq(cfg.defaults.start_suspended, false)
+	eq(cfg.notifications.enabled, true)
+end
+
+T["setup() configuration"]["applies shell config to commands"] = function()
+	child.lua([[
+    Zellij.setup({ shell = '/bin/custom-shell' })
+    Zellij.new_pane('echo test')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find the shell in the command (after --)
+	local shell_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--" then
+			shell_idx = i + 1
+		end
+	end
+
+	expect.no_equality(shell_idx, nil)
+	eq(cmd[shell_idx], "/bin/custom-shell")
+end
+
+T["setup() configuration"]["applies default floating setting"] = function()
+	-- Configure defaults to non-floating
+	child.lua([[
+    Zellij.setup({ defaults = { floating = false } })
+    Zellij.new_pane('echo test')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT contain --floating since default is now false
+	local has_floating = false
+	for _, v in ipairs(cmd) do
+		if v == "--floating" then
+			has_floating = true
+		end
+	end
+	eq(has_floating, false)
+end
+
+T["setup() configuration"]["applies default close_on_exit setting"] = function()
+	child.lua([[
+    Zellij.setup({ defaults = { close_on_exit = true } })
+    Zellij.new_pane('echo test')
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should contain --close-on-exit since default is now true
+	local has_close = false
+	for _, v in ipairs(cmd) do
+		if v == "--close-on-exit" then
+			has_close = true
+		end
+	end
+	eq(has_close, true)
+end
+
+T["setup() configuration"]["per-call options override defaults"] = function()
+	-- Set default to floating
+	child.lua([[
+    Zellij.setup({ defaults = { floating = true } })
+    -- But explicitly request non-floating for this call
+    Zellij.new_pane({ cmd = 'echo test', floating = false })
+  ]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT contain --floating because per-call option overrides
+	local has_floating = false
+	for _, v in ipairs(cmd) do
+		if v == "--floating" then
+			has_floating = true
+		end
+	end
+	eq(has_floating, false)
+end
+
+-- =============================================================================
+-- NOTIFICATION CONFIGURATION TESTS
+-- =============================================================================
+T["notification configuration"] = new_set()
+
+T["notification configuration"]["respects on_success = true"] = function()
+	child.lua([[
+    Zellij.setup({ notifications = { on_success = true } })
+    Zellij._new_pane_callback({ code = 0, stderr = '' })
+  ]])
+
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 1)
+	eq(notifications[1].level, vim.log.levels.INFO)
+end
+
+T["notification configuration"]["respects on_error = false"] = function()
+	child.lua([[
+    Zellij.setup({ notifications = { on_error = false } })
+    Zellij._new_pane_callback({ code = 1, stderr = 'error' })
+  ]])
+
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 0)
+end
+
+T["notification configuration"]["respects enabled = false"] = function()
+	child.lua([[
+    Zellij.setup({ notifications = { enabled = false, on_success = true, on_error = true } })
+    Zellij._new_pane_callback({ code = 0, stderr = '' })
+    Zellij._new_pane_callback({ code = 1, stderr = 'error' })
+  ]])
+
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 0) -- No notifications when disabled
+end
+
+-- =============================================================================
 -- RETURN THE TEST SET
 -- =============================================================================
 -- mini.test expects the test file to return the root test set.

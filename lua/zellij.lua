@@ -21,6 +21,11 @@
 -- 3. UNION TYPES (`|`)
 --    `string|table` means the value can be either type.
 --    Useful for flexible APIs like new_pane(cmd) vs new_pane({opts}).
+--
+-- 4. DEEP TABLE MERGING
+--    `vim.tbl_deep_extend('force', defaults, user_opts)` recursively merges
+--    tables. 'force' means user values override defaults.
+--    This is essential for configuration systems with nested options.
 -- =============================================================================
 
 local log = require("logger")
@@ -32,17 +37,81 @@ local log = require("logger")
 -- and type checking. They don't affect runtime behavior.
 -- =============================================================================
 
+---@class ZellijPaneDefaults
+---Default settings for new panes.
+---@field floating boolean Whether panes are floating by default (default: true)
+---@field close_on_exit boolean Close pane when command exits (default: false)
+---@field start_suspended boolean Wait for keypress before running (default: false)
+
+---@class ZellijNotificationConfig
+---Configuration for notification behavior.
+---@field enabled boolean Whether notifications are enabled at all (default: true)
+---@field on_success boolean Show notification on successful commands (default: false)
+---@field on_error boolean Show notification on errors (default: true)
+
+---@class ZellijConfig
+---Main configuration table for zellij.nvim.
+---All fields are optional and have sensible defaults.
+---
+---@field shell? string Shell to use for commands (default: $SHELL or /bin/sh)
+---@field defaults? ZellijPaneDefaults Default pane settings
+---@field notifications? ZellijNotificationConfig Notification settings
+
 ---@class ZellijNewPaneOpts
 ---Options table for creating a new Zellij pane.
 ---All fields are optional; sensible defaults are applied.
 ---
 ---@field cmd? string Shell command to execute in the pane
----@field floating? boolean Open as floating pane (default: true)
+---@field floating? boolean Open as floating pane (uses config default if nil)
 ---@field direction? "right"|"down" Direction for tiled pane (ignored if floating)
 ---@field cwd? string Working directory for the pane
 ---@field name? string Name to assign to the pane
----@field close_on_exit? boolean Close pane when command exits (default: false)
----@field start_suspended? boolean Wait for keypress before running (default: false)
+---@field close_on_exit? boolean Close pane when command exits (uses config default if nil)
+---@field start_suspended? boolean Wait for keypress before running (uses config default if nil)
+
+-- =============================================================================
+-- DEFAULT CONFIGURATION
+-- =============================================================================
+-- LUA PATTERN: Configuration defaults
+-- We define defaults as a local table, then merge user config on top.
+-- This pattern ensures all config keys have valid values even if
+-- the user only provides partial configuration.
+-- =============================================================================
+
+---@type ZellijConfig
+local DEFAULT_CONFIG = {
+	-- Shell defaults to environment variable, with fallback
+	shell = nil, -- Will use os.getenv("SHELL") or "/bin/sh" at runtime
+
+	-- Default pane behavior
+	defaults = {
+		floating = true,
+		close_on_exit = false,
+		start_suspended = false,
+	},
+
+	-- Notification preferences
+	notifications = {
+		enabled = true,
+		on_success = false, -- Silent success by default
+		on_error = true, -- Show errors by default
+	},
+}
+
+-- =============================================================================
+-- MODULE STATE
+-- =============================================================================
+-- LUA PATTERN: Module-level state
+-- Variables declared with `local` at module level persist across function calls
+-- but are private to the module. This is how we store configuration.
+--
+-- IMPORTANT: This is "module state" - it's shared across all uses of the module.
+-- In Neovim, `require('zellij')` returns the same cached module table,
+-- so this config persists for the entire Neovim session.
+-- =============================================================================
+
+---@type ZellijConfig
+local config = vim.deepcopy(DEFAULT_CONFIG)
 
 -- =============================================================================
 -- MODULE TABLE
@@ -55,8 +124,9 @@ local log = require("logger")
 -- =============================================================================
 
 ---@class Zellij
----@field setup fun(opts?: table): nil Configure the plugin
+---@field setup fun(opts?: ZellijConfig): nil Configure the plugin
 ---@field new_pane fun(opts: string|ZellijNewPaneOpts): nil Create a new pane
+---@field get_config fun(): ZellijConfig Get current configuration (for testing)
 local M = {}
 
 -- =============================================================================
@@ -69,6 +139,14 @@ local M = {}
 -- Defining functions with `local function name()` instead of `M.name`
 -- means they're not accessible from outside the module. This is true privacy.
 -- =============================================================================
+
+---Get the shell to use for commands
+---
+---@return string The shell path
+local function get_shell()
+	-- Priority: config.shell > $SHELL > /bin/sh
+	return config.shell or os.getenv("SHELL") or "/bin/sh"
+end
 
 ---Build the command array for vim.system() from options
 ---
@@ -116,10 +194,7 @@ local function build_new_pane_command(opts)
 	-- The `--` separator tells zellij that everything after is the command
 	if opts.cmd then
 		table.insert(cmd, "--")
-		-- We use the user's shell from environment, defaulting to sh
-		-- os.getenv() reads environment variables
-		local shell = os.getenv("SHELL") or "/bin/sh"
-		table.insert(cmd, shell)
+		table.insert(cmd, get_shell())
 		table.insert(cmd, "-c")
 		table.insert(cmd, opts.cmd)
 	end
@@ -136,25 +211,33 @@ end
 ---@param input string|ZellijNewPaneOpts User-provided input
 ---@return ZellijNewPaneOpts Normalized options table
 local function normalize_options(input)
+	-- Get defaults from config
+	local defaults = config.defaults
+
 	-- type(val) returns a string: "nil", "number", "string", "table", etc.
 	if type(input) == "string" then
 		-- Convert string to options table for backwards compatibility
+		-- Use config defaults for behavior
 		return {
 			cmd = input,
-			floating = true, -- Default to floating for simple commands
+			floating = defaults.floating,
+			close_on_exit = defaults.close_on_exit,
+			start_suspended = defaults.start_suspended,
 		}
 	elseif type(input) == "table" then
-		-- Apply defaults using the `or` pattern
-		-- `a or b` returns `a` if truthy, else `b` (like ?? in other languages)
-		-- Note: `false or true` returns `true`, so explicit false is preserved
+		-- Apply config defaults for unspecified options
+		-- LUA PATTERN: Nil-coalescing with config fallback
+		-- `input.x == nil and defaults.x or input.x` handles both nil and false correctly
 		return {
 			cmd = input.cmd,
-			floating = input.floating ~= false, -- Default true unless explicitly false
+			-- For booleans, we need special handling because `false or true` returns `true`
+			-- We use explicit nil check: if user didn't specify, use default
+			floating = input.floating == nil and defaults.floating or input.floating,
 			direction = input.direction,
 			cwd = input.cwd,
 			name = input.name,
-			close_on_exit = input.close_on_exit or false,
-			start_suspended = input.start_suspended or false,
+			close_on_exit = input.close_on_exit == nil and defaults.close_on_exit or input.close_on_exit,
+			start_suspended = input.start_suspended == nil and defaults.start_suspended or input.start_suspended,
 		}
 	else
 		-- Provide a helpful error message for invalid input
@@ -168,11 +251,42 @@ end
 
 ---Configure the zellij.nvim plugin
 ---
----@param opts? table Configuration options (currently unused, reserved for future)
+---Call this in your Neovim config to customize behavior:
+---
+---```lua
+---require('zellij').setup({
+---  shell = '/bin/zsh',
+---  defaults = {
+---    floating = true,
+---    close_on_exit = true,
+---  },
+---  notifications = {
+---    on_success = true,  -- Show success messages
+---    on_error = true,
+---  },
+---})
+---```
+---
+---@param opts? ZellijConfig Configuration options
 M.setup = function(opts)
-	-- Placeholder for future configuration
-	-- Will be expanded to support default options, keymaps, etc.
-	log.trace("Zellij.setup called", opts)
+	-- LUA PATTERN: Deep merge configuration
+	-- vim.tbl_deep_extend('force', a, b) merges b into a, with b taking priority
+	-- 'force' means when keys conflict, the later table wins
+	-- We use vim.deepcopy to avoid mutating DEFAULT_CONFIG
+	if opts then
+		config = vim.tbl_deep_extend("force", vim.deepcopy(DEFAULT_CONFIG), opts)
+	else
+		config = vim.deepcopy(DEFAULT_CONFIG)
+	end
+
+	log.trace("Zellij.setup called with config:", config)
+end
+
+---Get the current configuration (useful for testing and debugging)
+---
+---@return ZellijConfig Current configuration
+M.get_config = function()
+	return config
 end
 
 ---Create a new Zellij pane
@@ -210,7 +324,9 @@ M.new_pane = function(opts)
 	if not ok then
 		-- err contains the error message when pcall fails
 		log.trace("ERROR " .. err)
-		vim.notify("" .. err, vim.log.levels.ERROR, { title = "Zellij action failed" })
+		if config.notifications.enabled and config.notifications.on_error then
+			vim.notify("" .. err, vim.log.levels.ERROR, { title = "Zellij action failed" })
+		end
 	end
 end
 
@@ -225,11 +341,17 @@ M._new_pane_callback = function(res)
 	log.trace("Zellij._new_pane_callback", res)
 
 	-- Exit code 0 means success in Unix convention
-	-- Non-zero exit code means failure
-	if res.code ~= 0 then
-		M.err_notify(res.stderr .. " " .. res.code)
+	if res.code == 0 then
+		-- Success notification (if enabled)
+		if config.notifications.enabled and config.notifications.on_success then
+			M.ok_notify("Command completed successfully")
+		end
+	else
+		-- Non-zero exit code means failure
+		if config.notifications.enabled and config.notifications.on_error then
+			M.err_notify(res.stderr .. " " .. res.code)
+		end
 	end
-	-- Success is silent by default (can be configured later)
 end
 
 ---Display a success notification
