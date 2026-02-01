@@ -69,6 +69,26 @@ local log = require("logger")
 ---@field close_on_exit? boolean Close pane when command exits (uses config default if nil)
 ---@field start_suspended? boolean Wait for keypress before running (uses config default if nil)
 
+---@class ZellijRunOpts
+---Options for the run() convenience function.
+---Same as ZellijNewPaneOpts but without cmd (it's the first argument).
+---
+---@field floating? boolean Open as floating pane (uses config default if nil)
+---@field direction? "right"|"down" Direction for tiled pane (ignored if floating)
+---@field cwd? string Working directory for the pane
+---@field name? string Name to assign to the pane
+---@field close_on_exit? boolean Close pane when command exits (uses config default if nil)
+---@field start_suspended? boolean Wait for keypress before running (uses config default if nil)
+
+---@class ZellijEditOpts
+---Options for the edit() function.
+---Controls how the file is opened in a new pane.
+---
+---@field floating? boolean Open as floating pane (uses config default if nil)
+---@field direction? "right"|"down" Direction for tiled pane (ignored if floating)
+---@field line? number Line number to jump to (uses +line syntax)
+---@field cwd? string Working directory for the editor
+
 -- =============================================================================
 -- DEFAULT CONFIGURATION
 -- =============================================================================
@@ -126,6 +146,8 @@ local config = vim.deepcopy(DEFAULT_CONFIG)
 ---@class Zellij
 ---@field setup fun(opts?: ZellijConfig): nil Configure the plugin
 ---@field new_pane fun(opts: string|ZellijNewPaneOpts): nil Create a new pane
+---@field run fun(cmd: string, opts?: ZellijRunOpts): nil Run command in new pane (convenience alias)
+---@field edit fun(file: string, opts?: ZellijEditOpts): nil Open file in new pane with $EDITOR
 ---@field get_config fun(): ZellijConfig Get current configuration (for testing)
 local M = {}
 
@@ -198,6 +220,42 @@ local function build_new_pane_command(opts)
 		table.insert(cmd, "-c")
 		table.insert(cmd, opts.cmd)
 	end
+
+	return cmd
+end
+
+---Build the command array for zellij action edit
+---
+---LUA PATTERN: Separate command builders
+---We keep build functions separate for each action type.
+---This makes the code easier to test and modify independently.
+---
+---@param file string Path to the file to edit
+---@param opts ZellijEditOpts Options for the edit command
+---@return string[] Array of command parts for vim.system()
+local function build_edit_command(file, opts)
+	local cmd = { "zellij", "action", "edit" }
+
+	if opts.floating then
+		table.insert(cmd, "--floating")
+	elseif opts.direction then
+		table.insert(cmd, "--direction")
+		table.insert(cmd, opts.direction)
+	end
+
+	if opts.cwd then
+		table.insert(cmd, "--cwd")
+		table.insert(cmd, opts.cwd)
+	end
+
+	-- Line number support: zellij edit uses --line flag
+	if opts.line then
+		table.insert(cmd, "--line-number")
+		table.insert(cmd, tostring(opts.line))
+	end
+
+	-- The file path is the last argument
+	table.insert(cmd, file)
 
 	return cmd
 end
@@ -326,6 +384,82 @@ M.new_pane = function(opts)
 		log.trace("ERROR " .. err)
 		if config.notifications.enabled and config.notifications.on_error then
 			vim.notify("" .. err, vim.log.levels.ERROR, { title = "Zellij action failed" })
+		end
+	end
+end
+
+---Run a command in a new Zellij pane (convenience alias for new_pane)
+---
+---LUA PATTERN: Convenience wrappers
+---This is a thin wrapper that provides a more intuitive API for the common
+---use case of running a command. Instead of `new_pane({cmd='...', ...})`,
+---users can write `run('...', {...})`.
+---
+---```lua
+----- Simple usage
+---Zellij.run('npm test')
+---
+----- With options
+---Zellij.run('cargo build', { close_on_exit = true, name = 'Build' })
+---```
+---
+---@param cmd string The command to run
+---@param opts? ZellijRunOpts Optional settings for the pane
+M.run = function(cmd, opts)
+	-- LUA PATTERN: Table merging for function arguments
+	-- We create a new table that combines the command with any provided options.
+	-- vim.tbl_extend('force', {}, opts or {}) safely handles nil opts.
+	local pane_opts = vim.tbl_extend("force", opts or {}, { cmd = cmd })
+	M.new_pane(pane_opts)
+end
+
+---Open a file in a new Zellij pane using the system editor ($EDITOR)
+---
+---This leverages Zellij's built-in edit action, which opens files using
+---the EDITOR environment variable. Useful for:
+--- - Side-by-side editing of related files
+--- - Viewing log files while editing code
+--- - Opening the current buffer in a separate pane
+---
+---```lua
+----- Open a file
+---Zellij.edit('/path/to/file.lua')
+---
+----- Open current buffer's file in a floating pane
+---Zellij.edit(vim.fn.expand('%:p'), { floating = true })
+---
+----- Open at specific line (useful for error jumping)
+---Zellij.edit('/path/to/file.lua', { line = 42 })
+---```
+---
+---@param file string Path to the file to edit (use vim.fn.expand for current buffer)
+---@param opts? ZellijEditOpts Optional settings for the pane
+M.edit = function(file, opts)
+	-- Apply defaults for edit options
+	-- LUA PATTERN: Nil-safe option access with defaults
+	-- We use the same pattern as normalize_options for boolean handling:
+	-- `x == nil and default or x` correctly handles false values
+	opts = opts or {}
+	local defaults = config.defaults
+	local edit_opts = {
+		floating = opts.floating == nil and defaults.floating or opts.floating,
+		direction = opts.direction,
+		line = opts.line,
+		cwd = opts.cwd,
+	}
+
+	-- Build the command array
+	local cmd = build_edit_command(file, edit_opts)
+
+	log.trace("Zellij.edit command:", cmd)
+
+	-- Execute the command asynchronously
+	local ok, err = pcall(vim.system, cmd, { text = true }, M._new_pane_callback)
+
+	if not ok then
+		log.trace("ERROR " .. err)
+		if config.notifications.enabled and config.notifications.on_error then
+			vim.notify("" .. err, vim.log.levels.ERROR, { title = "Zellij edit failed" })
 		end
 	end
 end
