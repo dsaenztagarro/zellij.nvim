@@ -7,7 +7,10 @@
       "Bash(make test:*)",
       "Bash(git add:*)",
       "Bash(git rm:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create --title \"Upgrade test suite to mini.test\" --body \"$(cat <<''EOF''\n## Summary\n- Migrate from plenary busted to mini.test for modern Neovim plugin testing\n- Replace plenary.log dependency with self-contained logger module\n- Add comprehensive Lua concept documentation in code comments\n- Create minimal_init.lua for isolated test environment\n- Update Makefile with new test commands and documentation\n- Add .luacheckrc for proper Neovim/test globals configuration\n\n## Why mini.test?\n- Provides child Neovim process isolation for proper functional testing\n- More programmatic test style (vs DSL-like busted)\n- Better maintained and part of the popular mini.nvim ecosystem\n- Proper test isolation prevents state pollution between tests\n\n## Test plan\n- [x] All 9 tests pass with `make test`\n- [x] Luacheck passes with no warnings\n- [x] StyLua formatting applied\n\nResolves #1\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\nEOF\n)\")",
+      "Bash(gh pr merge:*)"
     ],
     "deny": [],
     "ask": []

@@ -71,6 +71,21 @@ local T = new_set({
 			-- Load the zellij module in the child process
 			-- The double brackets [[...]] are Lua's long string syntax (no escaping needed)
 			child.lua([[Zellij = require('zellij')]])
+			-- Set up common mocks for vim.system
+			child.lua([[
+        _G.captured_cmd = nil
+        _G.notifications = {}
+        vim.system = function(cmd, opts, callback)
+          _G.captured_cmd = cmd
+          if callback then
+            callback({ code = 0, signal = 0, stdout = '', stderr = '' })
+          end
+          return {}
+        end
+        vim.notify = function(msg, level, opts)
+          table.insert(_G.notifications, { msg = msg, level = level, opts = opts })
+        end
+      ]])
 		end,
 		-- After all tests complete: clean up the child process
 		post_once = child.stop,
@@ -114,7 +129,7 @@ T["setup()"]["can be called without arguments"] = function()
 end
 
 -- =============================================================================
--- NEW_PANE TESTS
+-- NEW_PANE TESTS - Basic API
 -- =============================================================================
 T["new_pane()"] = new_set()
 
@@ -125,24 +140,9 @@ end
 
 T["new_pane()"]["handles vim.system errors gracefully"] = function()
 	-- Override vim.system to simulate an error
-	-- This tests the pcall error handling in new_pane
 	child.lua([[
-    -- Store original for potential restoration
-    _G.original_vim_system = vim.system
-
-    -- Replace with error-throwing mock
     vim.system = function()
       error('Simulated system call failure')
-    end
-
-    -- Track notifications
-    _G.notifications = {}
-    vim.notify = function(msg, level, opts)
-      table.insert(_G.notifications, {
-        msg = msg,
-        level = level,
-        opts = opts
-      })
     end
   ]])
 
@@ -157,33 +157,158 @@ T["new_pane()"]["handles vim.system errors gracefully"] = function()
 	eq(notifications[1].level, vim.log.levels.ERROR)
 end
 
-T["new_pane()"]["calls vim.system with correct command structure"] = function()
-	-- Mock vim.system to capture the command
-	child.lua([[
-    _G.captured_cmd = nil
-    vim.system = function(cmd, opts, callback)
-      _G.captured_cmd = cmd
-      -- Simulate successful async response
-      if callback then
-        callback({ code = 0, signal = 0, stdout = '', stderr = '' })
-      end
-      return {}
-    end
-  ]])
-
+T["new_pane()"]["accepts string argument (backwards compatible)"] = function()
 	child.lua([[Zellij.new_pane('echo hello')]])
 
 	local cmd = child.lua_get([[_G.captured_cmd]])
 
-	-- Verify command structure
+	-- Verify base command structure
 	eq(cmd[1], "zellij")
 	eq(cmd[2], "action")
 	eq(cmd[3], "new-pane")
-	eq(cmd[4], "--floating")
+	eq(cmd[4], "--floating") -- Default for string input
 	eq(cmd[5], "--")
-	eq(cmd[6], "zsh")
+	-- cmd[6] is the shell (from $SHELL)
 	eq(cmd[7], "-c")
 	eq(cmd[8], "echo hello")
+end
+
+-- =============================================================================
+-- NEW_PANE TESTS - Options Table API
+-- =============================================================================
+T["new_pane() with options"] = new_set()
+
+T["new_pane() with options"]["accepts options table with cmd"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'npm test' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "action")
+	eq(cmd[3], "new-pane")
+	eq(cmd[4], "--floating") -- Default is floating
+end
+
+T["new_pane() with options"]["respects floating = false"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'npm test', floating = false })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should NOT contain --floating
+	local has_floating = false
+	for _, v in ipairs(cmd) do
+		if v == "--floating" then
+			has_floating = true
+		end
+	end
+	eq(has_floating, false)
+end
+
+T["new_pane() with options"]["respects direction option"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'npm test', floating = false, direction = 'down' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --direction and its value
+	local dir_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--direction" then
+			dir_idx = i
+		end
+	end
+
+	expect.no_equality(dir_idx, nil)
+	eq(cmd[dir_idx + 1], "down")
+end
+
+T["new_pane() with options"]["respects cwd option"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'ls', cwd = '/tmp' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --cwd and its value
+	local cwd_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--cwd" then
+			cwd_idx = i
+		end
+	end
+
+	expect.no_equality(cwd_idx, nil)
+	eq(cmd[cwd_idx + 1], "/tmp")
+end
+
+T["new_pane() with options"]["respects name option"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'npm test', name = 'Tests' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Find --name and its value
+	local name_idx = nil
+	for i, v in ipairs(cmd) do
+		if v == "--name" then
+			name_idx = i
+		end
+	end
+
+	expect.no_equality(name_idx, nil)
+	eq(cmd[name_idx + 1], "Tests")
+end
+
+T["new_pane() with options"]["respects close_on_exit option"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'npm test', close_on_exit = true })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Check for --close-on-exit flag
+	local has_close = false
+	for _, v in ipairs(cmd) do
+		if v == "--close-on-exit" then
+			has_close = true
+		end
+	end
+	eq(has_close, true)
+end
+
+T["new_pane() with options"]["respects start_suspended option"] = function()
+	child.lua([[Zellij.new_pane({ cmd = 'npm test', start_suspended = true })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Check for --start-suspended flag
+	local has_suspended = false
+	for _, v in ipairs(cmd) do
+		if v == "--start-suspended" then
+			has_suspended = true
+		end
+	end
+	eq(has_suspended, true)
+end
+
+T["new_pane() with options"]["creates pane without command when cmd is nil"] = function()
+	child.lua([[Zellij.new_pane({ floating = true, name = 'Shell' })]])
+
+	local cmd = child.lua_get([[_G.captured_cmd]])
+
+	-- Should have base command and --name, but no -- separator
+	eq(cmd[1], "zellij")
+	eq(cmd[2], "action")
+	eq(cmd[3], "new-pane")
+
+	-- Should NOT contain -- separator (no command to run)
+	local has_separator = false
+	for _, v in ipairs(cmd) do
+		if v == "--" then
+			has_separator = true
+		end
+	end
+	eq(has_separator, false)
+end
+
+T["new_pane() with options"]["errors on invalid input type"] = function()
+	expect.error(function()
+		child.lua([[Zellij.new_pane(123)]])
+	end)
 end
 
 -- =============================================================================
@@ -192,37 +317,25 @@ end
 T["ok_notify()"] = new_set()
 
 T["ok_notify()"]["sends INFO level notification"] = function()
-	child.lua([[
-    _G.last_notification = nil
-    vim.notify = function(msg, level, opts)
-      _G.last_notification = { msg = msg, level = level, opts = opts }
-    end
-  ]])
-
 	child.lua([[Zellij.ok_notify('Test message')]])
 
-	local notif = child.lua_get([[_G.last_notification]])
-	eq(notif.msg, "Test message")
-	eq(notif.level, vim.log.levels.INFO)
-	eq(notif.opts.title, "ZELLIJ")
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 1)
+	eq(notifications[1].msg, "Test message")
+	eq(notifications[1].level, vim.log.levels.INFO)
+	eq(notifications[1].opts.title, "ZELLIJ")
 end
 
 T["err_notify()"] = new_set()
 
 T["err_notify()"]["sends ERROR level notification"] = function()
-	child.lua([[
-    _G.last_notification = nil
-    vim.notify = function(msg, level, opts)
-      _G.last_notification = { msg = msg, level = level, opts = opts }
-    end
-  ]])
-
 	child.lua([[Zellij.err_notify('Error message')]])
 
-	local notif = child.lua_get([[_G.last_notification]])
-	eq(notif.msg, "Error message")
-	eq(notif.level, vim.log.levels.ERROR)
-	eq(notif.opts.title, "Zellij cmd failed")
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 1)
+	eq(notifications[1].msg, "Error message")
+	eq(notifications[1].level, vim.log.levels.ERROR)
+	eq(notifications[1].opts.title, "Zellij cmd failed")
 end
 
 -- =============================================================================
@@ -231,36 +344,18 @@ end
 T["_new_pane_callback()"] = new_set()
 
 T["_new_pane_callback()"]["does not notify on success (code 0)"] = function()
-	child.lua([[
-    _G.notification_count = 0
-    vim.notify = function()
-      _G.notification_count = _G.notification_count + 1
-    end
-  ]])
-
 	child.lua([[Zellij._new_pane_callback({ code = 0, stderr = '' })]])
 
-	local count = child.lua_get([[_G.notification_count]])
-	eq(count, 0)
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 0)
 end
 
 T["_new_pane_callback()"]["notifies on error (non-zero code)"] = function()
-	child.lua([[
-    _G.notification_count = 0
-    _G.last_notification = nil
-    vim.notify = function(msg, level, opts)
-      _G.notification_count = _G.notification_count + 1
-      _G.last_notification = { msg = msg, level = level }
-    end
-  ]])
-
 	child.lua([[Zellij._new_pane_callback({ code = 1, stderr = 'command failed' })]])
 
-	local count = child.lua_get([[_G.notification_count]])
-	eq(count, 1)
-
-	local notif = child.lua_get([[_G.last_notification]])
-	eq(notif.level, vim.log.levels.ERROR)
+	local notifications = child.lua_get([[_G.notifications]])
+	eq(#notifications, 1)
+	eq(notifications[1].level, vim.log.levels.ERROR)
 end
 
 -- =============================================================================
